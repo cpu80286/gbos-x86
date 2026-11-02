@@ -1,0 +1,157 @@
+
+name: Build gbOS86 Standard Live USB
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build standard image
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      # 1. 빌드 공간 확장
+      - name: Maximize build disk space
+        uses: easimon/maximize-build-space@v10
+        with:
+          root-reserve-mb: 8192
+          temp-reserve-mb: 1024
+          swap-size-mb: 2048
+          remove-dotnet: true
+          remove-android: true
+          remove-haskell: true
+          remove-codeql: true
+          remove-docker-images: true
+
+      # 2. 저장소 다운로드
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # 3. 빌드 환경 확인
+      - name: Check build environment
+        shell: bash
+        run: |
+          set -e
+
+          echo "=== Disk space ==="
+          df -hT
+
+          WORK_FREE=$(df -BG --output=avail "$GITHUB_WORKSPACE" \
+            | tail -1 | tr -dc '0-9')
+
+          DOCKER_FREE=$(df -BG --output=avail /var/lib/docker \
+            | tail -1 | tr -dc '0-9')
+
+          echo "Workspace free: ${WORK_FREE}G"
+          echo "Docker free: ${DOCKER_FREE}G"
+
+          if [ "$WORK_FREE" -lt 35 ]; then
+            echo "::error::Less than 35GB workspace space."
+            exit 1
+          fi
+
+          if [ "$DOCKER_FREE" -lt 8 ]; then
+            echo "::error::Less than 8GB Docker storage space."
+            exit 1
+          fi
+
+          docker info
+          python3 --version
+
+      # 4. 표준 Live USB 이미지 빌드
+      - name: Build gbOS86
+        shell: bash
+        run: |
+          set -e
+          chmod +x build.sh
+
+          ./build.sh -y --standard
+
+      # 5. 이미지 확인 및 체크섬 생성
+      - name: Prepare image
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p "$RUNNER_TEMP/gbos86-release"
+
+          IMG=$(find dist -maxdepth 1 \
+            -type f \
+            -name 'gbOS86-*.img' \
+            ! -name '*looper*' \
+            -print -quit)
+
+          if [ -z "$IMG" ]; then
+            echo "::error::Image not found."
+            exit 1
+          fi
+
+          cp "$IMG" "$RUNNER_TEMP/gbos86-release/gbOS86.img"
+
+          cd "$RUNNER_TEMP/gbos86-release"
+
+          sha256sum gbOS86.img > gbOS86.img.sha256
+
+          echo "=== Image information ==="
+          ls -lh gbOS86.img
+          cat gbOS86.img.sha256
+
+      # 6. 2GB 미만으로 이미지 분할
+      - name: Split image
+        shell: bash
+        run: |
+          set -e
+
+          cd "$RUNNER_TEMP/gbos86-release"
+
+          split -b 1900M -d -a 3 \
+            gbOS86.img \
+            gbOS86.img.part-
+
+          rm gbOS86.img
+
+          echo "=== Split files ==="
+          ls -lh
+
+          cat > README.txt <<'EOF'
+          gbOS86 Standard Live USB Image
+
+          Image: gbOS86.img
+          Type: Standard Live USB Installer
+
+          Join all gbOS86.img.part-* files in numerical order.
+          Verify the restored image using gbOS86.img.sha256.
+
+          WARNING:
+          The installer option can erase the internal laptop drive.
+          Select Live mode first.
+          EOF
+
+      # 7. 비공개 Draft Release 업로드
+      - name: Upload private release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -e
+
+          TAG="gbos86-build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          cd "$RUNNER_TEMP/gbos86-release"
+
+          gh release create "$TAG" \
+            gbOS86.img.part-* \
+            gbOS86.img.sha256 \
+            README.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "gbOS86 Standard Build ${GITHUB_RUN_ID}" \
+            --notes "Automatically built gbOS86 Standard Live USB image." \
+            --draft
+
+          echo "=== Release created ==="
+          echo "Tag: $TAG"
+          echo "Repository: $GITHUB_REPOSITORY"
