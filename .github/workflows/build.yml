@@ -50,8 +50,9 @@ jobs:
 
           docker info | grep "Docker Root Dir"
 
+
       # 3. 빌드 환경 확인
-     - name: Check build environment
+      - name: Check build environment
         shell: bash
         run: |
           set -e
