@@ -15,12 +15,12 @@ jobs:
 
     steps:
       # 1. 빌드 공간 확장
-      - name: Maximize build disk space
+     - name: Maximize build disk space
         uses: easimon/maximize-build-space@v10
         with:
-          root-reserve-mb: 8192
-          temp-reserve-mb: 1024
-          swap-size-mb: 2048
+          root-reserve-mb: 2048
+          temp-reserve-mb: 512
+          swap-size-mb: 1024
           remove-dotnet: true
           remove-android: true
           remove-haskell: true
@@ -30,9 +30,28 @@ jobs:
       # 2. 저장소 다운로드
       - name: Checkout source
         uses: actions/checkout@v4
+      
+      - name: Move Docker storage to build volume
+        shell: bash
+        run: |
+          set -e
+
+          sudo systemctl stop docker
+
+          sudo mkdir -p "$GITHUB_WORKSPACE/docker-data"
+
+          sudo tee /etc/docker/daemon.json > /dev/null <<EOF
+          {
+            "data-root": "$GITHUB_WORKSPACE/docker-data"
+          }
+          EOF
+
+          sudo systemctl start docker
+
+          docker info | grep "Docker Root Dir"
 
       # 3. 빌드 환경 확인
-      - name: Check build environment
+     - name: Check build environment
         shell: bash
         run: |
           set -e
@@ -40,10 +59,16 @@ jobs:
           echo "=== Disk space ==="
           df -hT
 
+          echo "=== Workspace ==="
+          df -h "$GITHUB_WORKSPACE"
+
+          echo "=== Docker storage ==="
+          docker info | grep "Docker Root Dir"
+
           WORK_FREE=$(df -BG --output=avail "$GITHUB_WORKSPACE" \
             | tail -1 | tr -dc '0-9')
 
-          DOCKER_FREE=$(df -BG --output=avail /var/lib/docker \
+          DOCKER_FREE=$(df -BG --output=avail "$GITHUB_WORKSPACE/docker-data" \
             | tail -1 | tr -dc '0-9')
 
           echo "Workspace free: ${WORK_FREE}G"
@@ -58,9 +83,6 @@ jobs:
             echo "::error::Less than 8GB Docker storage space."
             exit 1
           fi
-
-          docker info
-          python3 --version
 
       # 4. 표준 Live USB 이미지 빌드
       - name: Build gbOS86
