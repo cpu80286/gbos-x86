@@ -75,8 +75,8 @@ jobs:
           echo "Workspace free: ${WORK_FREE}G"
           echo "Docker free: ${DOCKER_FREE}G"
 
-          if [ "$WORK_FREE" -lt 35 ]; then
-            echo "::error::Less than 35GB workspace space."
+          if [ "$WORK_FREE" -lt 30 ]; then
+            echo "::error::Less than 30GB workspace space."
             exit 1
           fi
 
