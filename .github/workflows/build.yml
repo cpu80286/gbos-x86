@@ -100,28 +100,26 @@ jobs:
         run: |
           set -e
 
-          mkdir -p "$RUNNER_TEMP/gbos86-release"
+          IMAGE=$(find dist -maxdepth 1 -type f -name 'gbOS86-*.img' -print -quit)
 
-          IMG=$(find dist -maxdepth 1 \
-            -type f \
-            -name 'gbOS86-*.img' \
-            ! -name '*looper*' \
-            -print -quit)
-
-          if [ -z "$IMG" ]; then
-            echo "::error::Image not found."
+          if [ -z "$IMAGE" ]; then
+            echo "::error::Build image not found."
             exit 1
           fi
 
-          cp "$IMG" "$RUNNER_TEMP/gbos86-release/gbOS86.img"
+          RELEASE_DIR="$GITHUB_WORKSPACE/release-assets"
+          mkdir -p "$RELEASE_DIR"
 
-          cd "$RUNNER_TEMP/gbos86-release"
+          echo "Image: $IMAGE"
+          ls -lh "$IMAGE"
 
-          sha256sum gbOS86.img > gbOS86.img.sha256
+          sha256sum "$IMAGE" > "$RELEASE_DIR/gbOS86.img.sha256"
 
-          echo "=== Image information ==="
-          ls -lh gbOS86.img
-          cat gbOS86.img.sha256
+          split -b 1900M -d -a 3 "$IMAGE" "$RELEASE_DIR/gbOS86.img.part-"
+
+          echo "Release files:"
+          ls -lh "$RELEASE_DIR"
+          df -h "$GITHUB_WORKSPACE"
 
       # 6. 2GB 미만으로 이미지 분할
       - name: Split image
@@ -164,7 +162,7 @@ jobs:
 
           TAG="gbos86-build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
-          cd "$RUNNER_TEMP/gbos86-release"
+          cd "$GITHUB_WORKSPACE"/release-assets/*
 
           gh release create "$TAG" \
             gbOS86.img.part-* \
