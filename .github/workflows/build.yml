@@ -15,7 +15,7 @@ jobs:
 
     steps:
       # 1. 빌드 공간 확장
-     - name: Maximize build disk space
+      - name: Maximize build disk space
         uses: easimon/maximize-build-space@v10
         with:
           root-reserve-mb: 2048
