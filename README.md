@@ -221,13 +221,15 @@ Tested on a Surface Laptop for Business 7th Edition with Intel: boots from the s
 |---|---|
 | Wi-Fi (BE201) | `CONFIG_IWLMLD` |
 | Internal keyboard, battery/charger, fan, platform profile | Surface Aggregator: `kernel/isa_emu_patch/surface_sl7_sam.sh`, `SERIAL_8250_RUNTIME_UARTS=4`, `PINCTRL_INTEL_PLATFORM` (the last two in `configure_whl.py --generic`) |
-| Speakers, headset jack | RT1320 amp + RT721 codec on SoundWire: `python3 kernel/isa_emu_patch/sdw_sl7.py`, firmware `realtek/rt1320/` (`tools/fetch_firmware.sh`), `usb/audio/mixer_paths_surface_laptop_7.xml` |
-| Touchpad with gestures and physical click | `tools/build_surface_tools.sh` (iptsd), `usb/surface/` |
+| Speakers, headset jack, internal mic | RT1320 amp + RT721 codec on SoundWire: `python3 kernel/isa_emu_patch/sdw_sl7.py`, firmware `realtek/rt1320/` (`tools/fetch_firmware.sh`), `usb/audio/mixer_paths_surface_laptop_7.xml`, `audio_config_surface_laptop_7.xml` |
+| Touchpad with gestures, physical click and precision IDC | `tools/build_surface_tools.sh` (iptsd), `usb/surface/` |
+| Camera (OV02C10 on IPU7) | `surface-webcam` bridge (`kernel/surface-webcam.c`, `tools/build_surface_tools.sh`), `usb/surface/`, `v4l2loopback` |
+| Sleep, lid close/open guard & power profiles | `usb/surface/sleep-guard.sh` |
 | Bluetooth | nothing extra |
 | Touchscreen, suspend/resume | nothing beyond the rows above (tested by hand on the laptop) |
 | Stable picture (no ghost images or freezes) | `XE_PARAMS="enable_psr=0 enable_fbc=0"` in `gbos.cfg` |
 
-Not working: internal microphone, HDMI audio, camera. `DEVICE_MODEL="Surface Laptop 7"` in `gbos.cfg` shows
+Not working: HDMI audio. `DEVICE_MODEL="Surface Laptop 7"` in `gbos.cfg` shows
 that name as Model / Device name in Settings. Tests: `tools/test_audio_config.sh`, `tools/test_iptsd_run.sh`, `tools/test_device_model.sh`.
 Credit: nierdal's write-up and patches in linux-surface/linux-surface issue #1710 (SAM entry, SoundWire analysis, touchpad calibration and
 `LiftGraceMs`), and alex-lentz's iptsd fork.
@@ -279,6 +281,7 @@ driver inside Google's userspace under QEMU.
 | `tools/swiftshader-android/` | builds SwiftShader as Android's Vulkan HAL (docker + NDK) for AMD GPUs |
 | `usb/kmod/` | `btusb`, `btintel`, `btrtl` built for kernel #29 |
 | `usb/installer/` | Alpine `sfdisk`/`mke2fs`/`e2fsck`/`mkfs.fat`/`blkid` + musl (`tools/fetch_installer_tools.sh`) |
+| `usb/a11y/` | stage0 screen reader: `start.sh`/`stop.sh` + `espeakup`, `espeak-ng` (English), `amixer` (`tools/fetch_a11y_tools.sh`) |
 | `usb/firmware/` | Intel Wi-Fi + Bluetooth firmware, `regulatory.db` |
 | `usb/soft_gk`, `gatekeeper/` | software Gatekeeper binary and source |
 | `usb/make_super.py`, `make_bootdisk.py`, `make_initramfs.py` | build `super.img`, the fake ChromeOS boot disk, the stage0 initramfs |
@@ -353,6 +356,20 @@ When installing onto a drive with existing operating systems (Windows or Linux),
   The installer offers **1) Update** (keeps your apps and data, updates system files and kernel), **2) Reinstall** (clean wipe), or **3) Only save logs**.
 
 During installation, live progress bars indicate system image and driver/firmware copying, followed by fast sha256 verification.
+
+### Accessibility (screen reader)
+
+- **Boot menu and installer are spoken** (kernel #46 and newer). The kernel has Speakup built in; `usb/a11y/` on the stick holds `espeakup` +
+  `espeak-ng` (English) + `amixer` (about 10 MB, from Alpine, filled by `tools/fetch_a11y_tools.sh`). Stage0 copies it to RAM, unmutes the
+  laptop's sound card, starts the reader and reads the boot menu and every installer message aloud; typed characters are echoed. The boot
+  menu waits 60 s instead of 15 (`A11Y_MENU_TIMEOUT`), progress is announced every 10 percent, and the drive serial you must type before an
+  erase is also spelled out character by character. The confirmation itself is unchanged. `A11Y=0` in `gbos.cfg` turns it off.
+  Works on laptops whose sound card the kernel brings up by itself (legacy Intel HDA: most pre-2021 laptops), and on newer Intel ones whose HDA
+  controller waits for the GPU driver (Raptor Lake: `start.sh` loads i915/xe itself first). SOF-only machines have no sound
+  at that stage, so no speech there (logged as `a11y: no sound card`). Nothing is spoken before the stick's kernel starts (the firmware's own
+  boot-device menu is outside gbOS86). Test: `kernel/isa_emu_test/run_a11y_qemu.py usb/out/BOOTX64.EFI` (emulated Intel HDA, records the audio).
+- **Android**: set `ACCESSIBILITY=talkback` in `gbos.cfg` and Google's TalkBack (already in the image, with Google TTS) is switched on at the
+  first boot.
 
 ### Debugging workflow
 The system writes logs to its own `GBOSSYS` (or `GBOS`) partition. To read them, boot the stick, choose
