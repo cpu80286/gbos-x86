@@ -1,5 +1,4 @@
-
-name: Build gbOS86 Standard Live USB
+﻿name: Build gbOS86 Standard Live USB
 
 on:
   workflow_dispatch:
@@ -11,10 +10,9 @@ jobs:
   build:
     name: Build standard image
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 360
 
     steps:
-      # 1. 빌드 공간 확장
       - name: Maximize build disk space
         uses: easimon/maximize-build-space@v10
         with:
@@ -27,50 +25,35 @@ jobs:
           remove-codeql: true
           remove-docker-images: true
 
-      # 2. 저장소 다운로드
       - name: Checkout source
         uses: actions/checkout@v4
-      
+
       - name: Move Docker storage to build volume
         shell: bash
         run: |
           set -e
-
           sudo systemctl stop docker
-
           sudo mkdir -p "$GITHUB_WORKSPACE/docker-data"
-
+          sudo mkdir -p /etc/docker
           sudo tee /etc/docker/daemon.json > /dev/null <<EOF
           {
             "data-root": "$GITHUB_WORKSPACE/docker-data"
           }
           EOF
-
           sudo systemctl start docker
-
           docker info | grep "Docker Root Dir"
 
-
-      # 3. 빌드 환경 확인
       - name: Check build environment
         shell: bash
         run: |
           set -e
-
           echo "=== Disk space ==="
           df -hT
-
-          echo "=== Workspace ==="
-          df -h "$GITHUB_WORKSPACE"
-
           echo "=== Docker storage ==="
           docker info | grep "Docker Root Dir"
 
-          WORK_FREE=$(df -BG --output=avail "$GITHUB_WORKSPACE" \
-            | tail -1 | tr -dc '0-9')
-
-          DOCKER_FREE=$(df -BG --output=avail "$GITHUB_WORKSPACE/docker-data" \
-            | tail -1 | tr -dc '0-9')
+          WORK_FREE=$(df -BG --output=avail "$GITHUB_WORKSPACE" | tail -1 | tr -dc '0-9')
+          DOCKER_FREE=$(df -BG --output=avail "$GITHUB_WORKSPACE/docker-data" | tail -1 | tr -dc '0-9')
 
           echo "Workspace free: ${WORK_FREE}G"
           echo "Docker free: ${DOCKER_FREE}G"
@@ -85,21 +68,17 @@ jobs:
             exit 1
           fi
 
-      # 4. 표준 Live USB 이미지 빌드
-      - name: Build gbOS86
+      - name: Build gbOS86 Standard
         shell: bash
         run: |
           set -e
           chmod +x build.sh
-
           ./build.sh -y --standard
 
-      # 5. 이미지 확인, 체크섬 생성 및 분할
       - name: Prepare image
         shell: bash
         run: |
           set -e
-
           IMAGE=$(find dist -maxdepth 1 -type f -name 'gbOS86-*.img' -print -quit)
 
           if [ -z "$IMAGE" ]; then
@@ -110,19 +89,13 @@ jobs:
           RELEASE_DIR="$GITHUB_WORKSPACE/release-assets"
           mkdir -p "$RELEASE_DIR"
 
-          echo "=== Original image ==="
           ls -lh "$IMAGE"
-
           sha256sum "$IMAGE" | sed "s|$IMAGE|gbOS86.img|" > "$RELEASE_DIR/gbOS86.img.sha256"
 
-          echo "=== Splitting image ==="
           split -b 1900M -d -a 3 "$IMAGE" "$RELEASE_DIR/gbOS86.img.part-"
 
           cat > "$RELEASE_DIR/README.txt" <<'EOF'
           gbOS86 Standard Live USB Image
-
-          Image: gbOS86.img
-          Type: Standard Live USB Installer
 
           Join all gbOS86.img.part-* files in numerical order.
           Verify the restored image using gbOS86.img.sha256.
@@ -136,21 +109,14 @@ jobs:
           ls -lh "$RELEASE_DIR"
           df -h "$GITHUB_WORKSPACE"
 
-
-      # 6. 비공개 Draft Release 업로드
-      - name: Upload private release
+      - name: Upload private draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -e
-
           TAG="gbos86-build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-
           cd "$GITHUB_WORKSPACE/release-assets"
-
-          echo "=== Upload files ==="
-          ls -lh
 
           gh release create "$TAG" \
             gbOS86.img.part-* \
