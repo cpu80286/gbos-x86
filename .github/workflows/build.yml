@@ -69,6 +69,8 @@ jobs:
           fi
 
       - name: Build gbOS86 Standard
+        env:
+          GBOS_IPU6_CAMERA_BRIDGE: "0"
         shell: bash
         run: |
           set -e

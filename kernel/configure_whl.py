@@ -43,6 +43,9 @@ OVERRIDES = {
     # mic is on the codec (pin 0x12), so it works with this driver too.
     'SND_HDA_INTEL': 'y', 'SND_HDA_GENERIC': 'y', 'SND_HDA_CODEC_REALTEK': 'y', 'SND_HDA_CODEC_ALC269': 'y',
     'SND_HDA_CODEC_HDMI': 'y', 'SND_HDA_CODEC_HDMI_INTEL': 'y', 'SND_HDA_I915': 'y',
+    # Pin overrides from gbos.cfg (HDA_PINS, usb/hwdetect.sh): /sys/class/sound/hwCxDy/{user_pin_configs,reconfig}.
+    # The driver is built in, so its patch= / model= module options cannot be given through MODOPTS.
+    'SND_HDA_RECONFIG': 'y', 'SND_HDA_HWDEP': 'y',
     # Bluetooth: the 9560's Bluetooth is USB (8087:0aaa); Google's kernel only has PCIe Bluetooth.
     'BT_HCIBTUSB': 'm', 'BT_HCIBTUSB_AUTOSUSPEND': 'y',
     # KernelSU (tiann/KernelSU, GPL-2.0) built into the kernel: root for apps, driven by the
@@ -73,7 +76,7 @@ _y('WLAN_VENDOR_REALTEK', 'WLAN_VENDOR_MEDIATEK', 'WLAN_VENDOR_ATH', 'WLAN_VENDO
 # MWIFIEX_SDIO: Google Pixelbook (2017, "Eve") Wi-Fi is an SDIO 88W8897 (UNCONFIRMED): hwdetect shows no network device on PCI or USB.
 _m('MWIFIEX', 'MWIFIEX_PCIE', 'MWIFIEX_USB', 'MWIFIEX_SDIO')
 _m('IWLDVM', 'RTW88', 'RTW88_PCI', 'RTW88_8822BE', 'RTW88_8822CE', 'RTW88_8723DE', 'RTW88_8821CE',
-   'RTW89', 'RTW89_PCI', 'RTW89_8852AE', 'RTW89_8852BE', 'RTW89_8852CE', 'RTW89_8851BE', 'RTW89_8922AE',
+   'RTW89', 'RTW89_PCI', 'RTW89_8852AE', 'RTW89_8852BE', 'RTW89_8852BTE', 'RTW89_8852CE', 'RTW89_8851BE', 'RTW89_8922AE',
    'MT76_CORE', 'MT7921E', 'MT7921U', 'MT7925E', 'MT7615E', 'MT76x2E',
    'ATH10K', 'ATH10K_PCI', 'ATH11K', 'ATH11K_PCI', 'ATH12K', 'BRCMFMAC', 'BRCMFMAC_PCIE', 'BRCMFMAC_USB')
 # Bluetooth (USB btusb covers Intel/Realtek/MediaTek/Qualcomm/Broadcom; Intel 8087:* on USB, newer on PCIe).
@@ -111,6 +114,11 @@ _m('PINCTRL_INTEL_PLATFORM', 'SURFACE_AGGREGATOR', 'SURFACE_AGGREGATOR_REGISTRY'
    'BATTERY_SURFACE', 'CHARGER_SURFACE', 'SURFACE_PLATFORM_PROFILE', 'SENSORS_SURFACE_FAN', 'IWLMLD',
    'SND_SOC_RT1320_SDW', 'SND_SOC_RT721_SDCA_SDW')
 GENERIC['SERIAL_8250_RUNTIME_UARTS'] = '4'
+# Microsoft Surface Pro 5 (2017, Kaby Lake) and the other gen5/6 Surfaces, as in linux-surface's configs/surface-6.18.config:
+# SURFACE_ACPI_NOTIFY: battery/AC events come from the Surface Aggregator through ACPI (SAN), else no battery status;
+# SURFACE_GPE: lid wake (Pro 5 is in surface_gpe.c's DMI table); SOC_BUTTON_ARRAY + SURFACE_PRO3_BUTTON: power/volume buttons;
+# HID_IPTS: touchscreen + pen (drivers/hid/ipts, added by kernel/surface/apply.sh; iptsd in usb/surface reads it).
+_m('SURFACE_ACPI_NOTIFY', 'SURFACE_GPE', 'INPUT_SOC_BUTTON_ARRAY', 'SURFACE_PRO3_BUTTON', 'HID_IPTS')
 # Intel Volume Management Device: with VMD on (many 11th gen+ laptops, no BIOS switch) the NVMe sits behind a VMD domain and is invisible
 # to the installer until this root-port driver is in the kernel (HP 14s-dq2509TU, Core i3-1115G4, 8086:9a0b).
 _y('VMD')
@@ -122,10 +130,20 @@ _m('DELL_LAPTOP', 'DELL_WMI', 'DELL_SMBIOS', 'DELL_WMI_DESCRIPTOR', 'THINKPAD_AC
    'FUJITSU_LAPTOP', 'PANASONIC_LAPTOP', 'LG_LAPTOP', 'INTEL_HID_EVENT', 'INTEL_VBTN', 'INTEL_WMI_SBL_FW_UPDATE',
    'INTEL_PMC_CORE', 'INT3400_THERMAL', 'INT340X_THERMAL', 'INTEL_RAPL', 'X86_PKG_TEMP_THERMAL', 'WMI',
    'CHROME_PLATFORMS', 'ACPI_WMI', 'RFKILL_INPUT')
+# AMD s2idle: without amd_pmc the SoC never reaches S0i3 during suspend (amdgpu logs "Power consumption will be higher as the kernel
+# has not been compiled with CONFIG_AMD_PMC", ~40% battery overnight; issue 51). Binds by ACPI id (AMDI0005..) through coldplug.
+# AMD_PMF is left out: it needs AMDTEE + AMD_SFH_HID and is not required for S0i3.
+_m('AMD_PMC')
 # Storage / card reader / webcam / ethernet
 _y('MMC', 'USB_VIDEO_CLASS')
 _m('MMC_SDHCI', 'MMC_SDHCI_PCI', 'MMC_REALTEK_PCI', 'MISC_RTSX_PCI', 'MISC_RTSX_USB', 'R8169', 'E1000E', 'IGC',
    'IGB', 'R8152', 'USB_USBNET', 'USB_NET_CDCETHER', 'USB_RTL8152', 'USB_NET_AX88179_178A', 'USB_NET_CDC_NCM')
+# Intel IPU6 cameras (Latitude 7320: PCI 8086:9a19; front OVTI5678 and rear OVTI8856).
+# Board data and sensor/VCM wiring are applied by isa_emu_patch/camera_7320.py.
+# Android Camera3 integration and hardware frame capture remain separate requirements.
+_y('MEDIA_PCI_SUPPORT')
+_m('IPU_BRIDGE', 'VIDEO_INTEL_IPU6', 'VIDEO_OV5675', 'VIDEO_OV8856', 'VIDEO_DW9714', 'INTEL_SKL_INT3472',
+   'GPIO_TPS68470', 'REGULATOR_TPS68470', 'COMMON_CLK_TPS68470')
 # Audio: every common HDA codec, plus SOF for machines with DMIC/SoundWire (HDA is still preferred when it works).
 _m('SND_HDA_CODEC_CIRRUS', 'SND_HDA_CODEC_CS420X', 'SND_HDA_CODEC_CS421X', 'SND_HDA_CODEC_CS8409', 'SND_HDA_CODEC_CONEXANT',
    'SND_HDA_CODEC_SIGMATEL', 'SND_HDA_CODEC_VIA', 'SND_HDA_CODEC_ANALOG', 'SND_HDA_CODEC_CMEDIA', 'SND_HDA_CODEC_SI3054',
@@ -145,9 +163,25 @@ _m('SND_SOC_SOF_PCI', 'SND_SOC_SOF_ACPI', 'SND_SOC_SOF_INTEL_COMMON', 'SND_SOC_S
    'SND_SOC_RT1318_SDW', 'SND_SOC_RT712_SDCA_SDW', 'SND_SOC_RT722_SDCA_SDW', 'SND_SOC_MAX98357A', 'SND_SOC_MAX98373_I2C',
    'SND_SOC_MAX98390', 'SND_SOC_CS42L42', 'SND_SOC_ES8336', 'SND_SOC_NAU8825', 'SND_SOC_DA7219', 'SND_SOC_RT1011',
    'SND_SOC_RT1015', 'SND_SOC_RT1015P', 'SND_SOC_TAS2562')
+# AMD built-in microphones: the DMICs hang off the audio coprocessor (ACP, PCI 1022:15e2), not the HDA codec, and register as their
+# own ASoC card next to the HDA one (issue 39, Ryzen AI 7 350 / ACP 7.x: "pci devices without a driver" listed 1022:15e2).
+# snd_acp_config (SND_AMD_ACP_CONFIG) decides per platform which driver takes the ACP:
+#   Renoir/Cezanne/Lucienne (rev 0x01):   snd_rn_pci_acp3x + snd_acp3x_rn (card "acp")
+#   Rembrandt/Phoenix (rev 0x6x):         snd_pci_acp6x + snd_acp6x_mach (card "acp6x", DMI quirk table)
+#   ACP 6.3 (rev 0x63), and ACP 7.x whose BIOS sets acp-audio-config-flag to 0: snd_pci_ps + snd_ps_mach (card "acp63")
+#   ACP 7.x (rev 0x70-0x72) without that ACPI property (FLAG_AMD_LEGACY_ONLY_DMIC): snd_acp_pci + snd_acp_legacy_mach ("acp-pdm-mach")
+# usb/audio/gen_config.sh points InternalMic at that card's DMIC PCM. SoundWire AMD (SOUNDWIRE_AMD) stays off: DMIC only.
+_m('SND_AMD_ACP_CONFIG', 'SND_SOC_AMD_RENOIR', 'SND_SOC_AMD_RENOIR_MACH', 'SND_SOC_AMD_ACP6x', 'SND_SOC_AMD_YC_MACH',
+   'SND_SOC_AMD_ACP63_TOPLEVEL', 'SND_SOC_AMD_PS', 'SND_SOC_AMD_PS_MACH',
+   'SND_SOC_AMD_ACP_COMMON', 'SND_SOC_AMD_ACP_PCI', 'SND_AMD_ASOC_RENOIR', 'SND_AMD_ASOC_REMBRANDT', 'SND_AMD_ASOC_ACP63',
+   'SND_AMD_ASOC_ACP70', 'SND_SOC_AMD_LEGACY_MACH')
 
 # These must come out exactly as requested after olddefconfig.
-REQUIRED = ['DRM_I915', 'TRIM_UNUSED_KSYMS', 'MODULE_SIG_PROTECT', 'ANDROID_BINDER_IPC', 'BLK_DEV_NVME', 'KSU', 'VMD']
+REQUIRED = ['DRM_I915', 'TRIM_UNUSED_KSYMS', 'MODULE_SIG_PROTECT', 'ANDROID_BINDER_IPC', 'BLK_DEV_NVME',
+            'KSU', 'VMD', 'IPU_BRIDGE', 'VIDEO_INTEL_IPU6', 'VIDEO_OV5675', 'VIDEO_OV8856', 'VIDEO_DW9714',
+            'INTEL_SKL_INT3472', 'GPIO_TPS68470', 'REGULATOR_TPS68470', 'COMMON_CLK_TPS68470',
+            'SND_SOC_AMD_RENOIR_MACH', 'SND_SOC_AMD_YC_MACH', 'SND_SOC_AMD_PS', 'SND_SOC_AMD_PS_MACH',
+            'SND_SOC_AMD_ACP_PCI', 'SND_AMD_ASOC_ACP70', 'SND_SOC_AMD_LEGACY_MACH']
 
 
 def parse(text):
@@ -171,7 +205,8 @@ def render(values):
 def main():
     if sys.argv[1] == '--check':
         resolved = parse(open(sys.argv[2]).read())
-        bad = {k: resolved.get(k, 'n') for k in REQUIRED if resolved.get(k, 'n') != OVERRIDES[k]}
+        want = {**GENERIC, **OVERRIDES}  # REQUIRED names come from either table (VMD is a GENERIC one)
+        bad = {k: resolved.get(k, 'n') for k in REQUIRED if resolved.get(k, 'n') != want[k]}
         missed = {k: resolved.get(k, 'n') for k, v in OVERRIDES.items() if resolved.get(k, 'n') != v}
         print('not resolved as requested:', missed or 'none')
         gmiss = sorted(k for k, v in GENERIC.items() if resolved.get(k, 'n') != v)

@@ -205,6 +205,49 @@ chk "acer: headphone jack = Front Headphone" "$C" "<JackDev>HD-Audio Generic Fro
 nochk "acer: no jack device that does not exist" "$C" "Headphone Mic</JackDev>"
 chk "acer: volumes set" "$W/out-acer/gbos-gen/mixer_paths.xml" 'name="Speaker Playback Volume" value="87 87"'
 
+# ---- 3c. Lenovo Yoga Pro 7 14AKP10 (Ryzen AI 7 350, issue 39): Radeon HDMI card 0, ALC287 card 1 (speaker, jack), and the built-in
+# DMICs on the ACP as their own ASoC card (acp-pdm-mach, id acppdmmach, no HDA codec). Internal mic must use the ACP card, the jack
+# mic stays on the ALC287. A 4th card (HDA, with a codec) that happens to have a "DMIC" capture PCM must not be picked.
+D=$(mk acp)
+cat > $D/cards <<'EOF'
+ 0 [Generic        ]: HDA-Intel - HD-Audio Generic
+                      HD-Audio Generic at 0x902c8000 irq 47
+ 1 [Generic_1      ]: HDA-Intel - HD-Audio Generic
+                      HD-Audio Generic at 0x902c0000 irq 48
+ 2 [Other          ]: HDA-Intel - Other HDA
+ 3 [acppdmmach     ]: acp-pdm-mach - acp-pdm-mach
+                      LENOVO-83KG-YogaPro714AKP10-LNVNB161216
+EOF
+cat > $D/pcm <<'EOF'
+00-03: HDMI 0 : HDMI 0 : playback 1
+01-00: ALC287 Analog : ALC287 Analog : playback 1 : capture 1
+02-00: DMIC Fake : DMIC Fake : capture 1
+03-00: DMIC capture dmic-hifi-0 : DMIC capture dmic-hifi-0 : capture 1
+EOF
+for c in 0 1 2; do mkdir -p $D/card$c; echo "Codec: x" > "$D/card$c/codec#0"; done; mkdir -p $D/card3
+cat > $D/input <<'EOF'
+N: Name="HD-Audio Generic Mic"
+N: Name="HD-Audio Generic Headphone"
+EOF
+M=$(gen acp gbos-gen Generic_1 "HD-Audio Generic")
+C=$W/out-acp/gbos-gen/audio_config.xml
+wellformed "$C"
+python3 - "$C" > "$W/acp.py.out" 2>&1 <<'EOF'
+import sys, xml.etree.ElementTree as E
+h = E.parse(sys.argv[1]).getroot().find('HiFi')
+exp = {('Speaker','PlaybackPCM'): 'hw:Generic_1,0', ('InternalMic','CapturePCM'): 'hw:acppdmmach,0',
+       ('Mic','CapturePCM'): 'hw:Generic_1,0', ('Mic','JackDev'): 'HD-Audio Generic Mic'}
+bad = [f'{s}/{t}={h.find(s).findtext(t)!r} want {v!r}' for (s, t), v in exp.items() if h.find(s).findtext(t) != v]
+print('\n'.join(bad) or 'PYOK'); sys.exit(1 if bad else 0)
+EOF
+if [ $? = 0 ]; then ok "acp: internal mic = ACP DMIC card, speaker and jack mic on the ALC287"; else bad "acp mapping: $(cat $W/acp.py.out)"; fi
+case "$M" in *"internal-mic=acppdmmach,0"*) ok "acp: log line names the DMIC card";; *) bad "acp: log line: $M";; esac
+# without the ACP card the internal mic falls back to the ALC287's analog capture (as before)
+grep -v acppdmmach $D/cards > $D/cards.n && mv $D/cards.n $D/cards; grep -v '^03-' $D/pcm > $D/pcm.n && mv $D/pcm.n $D/pcm
+gen acp gbos-gen Generic_1 "HD-Audio Generic" >/dev/null
+chk "acp: no ACP card -> internal mic on analog capture" "$C" "<CapturePCM>hw:Generic_1,0</CapturePCM>"
+nochk "acp: no ACP card -> the HDA card's DMIC PCM is not used" "$C" "hw:Other"
+
 # ---- 4. SOF, combo jack, one HDMI, only DMIC16kHz ---------------------------------------------------------------------------
 gen sofcombo gbos-gen sofrt5682 sof-rt5682 >/dev/null
 C=$W/out-sofcombo/gbos-gen/audio_config.xml
@@ -266,6 +309,45 @@ print('PYOK' if not bad else 'PYBAD'); sys.exit(1 if bad else 0)
 EOF
 if [ $? = 0 ]; then ok "sdw: Speaker pcm 2, Headphone pcm 0, jack mic pcm 1, no Deepbuffer PCM, jack names"; else bad "sdw mapping: $(cat $W/sdw.py.out)"; fi
 
+# ---- 5c. Dell Latitude 7320 Detachable: dedicated Speaker PCM 2 vs jack playback PCM 0 -------------------------------
+D=$(mk latitude7320)
+cat > $D/cards <<'EOF'
+ 0 [sofsoundwire   ]: sof-soundwire - sof-soundwire
+                      DellInc-Latitude7320Detachable-0TNW0H
+EOF
+cat > $D/pcm <<'EOF'
+00-00: Jack Out (*) :  : playback 1
+00-01: Jack In (*) :  : capture 1
+00-02: Speaker (*) :  : playback 1
+00-05: HDMI1 (*) :  : playback 1
+00-06: HDMI2 (*) :  : playback 1
+00-07: HDMI3 (*) :  : playback 1
+00-31: Deepbuffer Jack Out (*) :  : playback 1
+00-35: Deepbuffer Speaker (*) :  : playback 1
+EOF
+cat > $D/input <<'EOF'
+EOF
+gen latitude7320 gbos-gen sofsoundwire sof-soundwire >/dev/null
+C=$W/out-latitude7320/gbos-gen/audio_config.xml
+wellformed "$C"
+python3 - "$C" > "$W/latitude7320.py.out" 2>&1 <<'EOF'
+import sys, xml.etree.ElementTree as E
+h = E.parse(sys.argv[1]).getroot().find('HiFi')
+got = {name: h.findtext(f'{name}/PlaybackPCM')
+       for name in ('Speaker', 'Headphone', 'HDMI1', 'HDMI2', 'HDMI3')}
+want = {'Speaker': 'hw:sofsoundwire,2', 'Headphone': 'hw:sofsoundwire,0',
+        'HDMI1': 'hw:sofsoundwire,5', 'HDMI2': 'hw:sofsoundwire,6',
+        'HDMI3': 'hw:sofsoundwire,7'}
+if got != want:
+    print(f'FAIL got {got}, want {want}')
+    sys.exit(1)
+print('PYOK')
+EOF
+if [ $? = 0 ]; then ok "7320: Speaker PCM 2 and headphone/jack PCM 0"; else bad "7320 PCM mapping: $(cat "$W/latitude7320.py.out")"; fi
+nochk "7320: generated template comment does not misidentify Latitude 5300" "$C" "Latitude 5300"
+chk "7320: PCM diagnostic distinguishes speaker and jack playback" "$W/msg-latitude7320" "speaker-playback=2 headphone-playback=0"
+nochk "7320: generated default profile comment does not misidentify Latitude 5300" "$W/out-latitude7320/audio_default.xml" "Latitude 5300"
+
 # ---- 5c. Meteor Lake SOF-HDA (Lenovo ThinkBook Plus G5 Hybrid 21N9, Core Ultra 7 155H; TAS2781 I2C amps behind the Realtek codec; HDMI
 #          codec at address 2). NOT a real /proc/asound capture: the card does not exist yet (probe fails on the missing topology).
 #          Card id/name are what skl_hda_dsp_generic registers (same as the ENVY); the PCM list is the one in
@@ -302,10 +384,74 @@ chk "mtl: HDMI3 jack" "$C" "<JackDev>sof-hda-dsp HDMI/DP,pcm=5</JackDev>"
 nochk "mtl: no deep-buffer PCM used" "$C" ",31<"
 nochk "mtl: no leftover PCH" "$C" "PCH"
 
+# ---- 5e. output volumes at the codec's own maxima (usb/audio/volmax.sh; issues 31/32) ------------------------------------------
+# Codec files as /proc/asound/cardN/codec#M prints them (hda_proc.c): each control under the node that owns it.
+codec() { # codec FILE NAME STEPS : a Realtek-style codec, Speaker/Headphone on DACs 0x02/0x03 with STEPS steps, Beep (0x1f) on a mixer
+  cat > "$1" <<EOF
+Codec: Realtek $2
+Address: 0
+Default Amp-Out caps: N/A
+Node 0x02 [Audio Output] wcaps 0x41d: Stereo Amp-Out
+  Control: name="Speaker Playback Volume", index=0, device=0
+    ControlAmp: chs=3, dir=Out, idx=0, ofs=0
+  Device: name="$2 Analog", type="Audio", device=0
+  Amp-Out caps: ofs=$3, nsteps=$3, stepsize=0x01, mute=0
+  Amp-Out vals:  [0x00 0x00]
+Node 0x03 [Audio Output] wcaps 0x41d: Stereo Amp-Out
+  Control: name="Headphone Playback Volume", index=0, device=0
+    ControlAmp: chs=3, dir=Out, idx=0, ofs=0
+  Amp-Out caps: ofs=$3, nsteps=$3, stepsize=0x01, mute=0
+Node 0x0b [Audio Mixer] wcaps 0x20010b: Stereo Amp-In
+  Control: name="Beep Playback Volume", index=0, device=0
+    ControlAmp: chs=3, dir=In, idx=4, ofs=0
+  Amp-In caps: ofs=0x17, nsteps=0x1f, stepsize=0x05, mute=1
+EOF
+}
+# Galaxy Book2 Pro 360 (ALC298, 0x7f steps) on SOF: the ENVY tree plus codec files
+cp -R $W/sof $W/gb; mkdir -p $W/gb/card0
+codec "$W/gb/card0/codec#0" ALC298 0x7f
+printf 'Codec: Intel Alderlake HDMI\nNode 0x03 [Audio Output] wcaps 0x6611: 8-Channels Digital\n' > "$W/gb/card0/codec#2"
+msg=$(gen gb gbos-gen sofhdadsp sof-hda-dsp); M=$W/out-gb/gbos-gen/mixer_paths.xml
+wellformed "$M"
+chk "volmax ALC298: Master 127"            "$M" '<ctl name="Master Playback Volume" value="127" />'
+chk "volmax ALC298: Speaker 127 127"       "$M" '<ctl name="Speaker Playback Volume" value="127 127" />'
+chk "volmax ALC298: Headphone 127 127"     "$M" '<ctl name="Headphone Playback Volume" value="127 127" />'
+nochk "volmax ALC298: no 87 left"          "$M" 'value="87'
+case "$msg" in *"volmax: volume maxima Beep=31 Headphone=127 Master=127 Speaker=127; set in mixer_paths.xml"*)
+  ok "volmax ALC298: logged, Beep (an input) does not lower Master";; *) bad "volmax ALC298 message: $msg";; esac
+# A codec with fewer steps than 87 (0x4a, the QEMU hda-duplex codec): 87 is out of range there
+cp -R $W/sof $W/low; mkdir -p $W/low/card0; codec "$W/low/card0/codec#0" ALCX 0x4a
+gen low gbos-gen sofhdadsp sof-hda-dsp >/dev/null; M=$W/out-low/gbos-gen/mixer_paths.xml
+chk "volmax 0x4a: Master 74"               "$M" '<ctl name="Master Playback Volume" value="74" />'
+chk "volmax 0x4a: Speaker 74 74"           "$M" '<ctl name="Speaker Playback Volume" value="74 74" />'
+# A control offset (ControlAmp ofs) lowers the maximum: hda_codec.c get_amp_max_value
+cp -R $W/sof $W/ofs; mkdir -p $W/ofs/card0; codec "$W/ofs/card0/codec#0" ALCO 0x57
+sed 's/^\(    ControlAmp: chs=3, dir=Out, idx=0, \)ofs=0$/\1ofs=7/' "$W/ofs/card0/codec#0" > "$W/ofs/c" && mv "$W/ofs/c" "$W/ofs/card0/codec#0"
+gen ofs gbos-gen sofhdadsp sof-hda-dsp >/dev/null
+chk "volmax ofs=7 on 0x57: Speaker 80 80"  "$W/out-ofs/gbos-gen/mixer_paths.xml" '<ctl name="Speaker Playback Volume" value="80 80" />'
+# The usual Realtek 0x57: unchanged, and so is a card without codec files (the ENVY tree above)
+cp -R $W/sof $W/r87; mkdir -p $W/r87/card0; codec "$W/r87/card0/codec#0" ALC255 0x57
+msg=$(gen r87 gbos-gen sofhdadsp sof-hda-dsp)
+cmp -s "$W/out-r87/gbos-gen/mixer_paths.xml" "$W/out-sof/gbos-gen/mixer_paths.xml" \
+  && ok "volmax 0x57: mixer_paths.xml identical to the one without codec files" || bad "volmax 0x57 changed mixer_paths.xml"
+case "$msg" in *"nothing to change"*) ok "volmax 0x57: logged as nothing to change";; *) bad "volmax 0x57 message: $msg";; esac
+chk "volmax: card without codec files keeps 87" "$W/out-sof/gbos-gen/mixer_paths.xml" '<ctl name="Speaker Playback Volume" value="87 87" />'
+# The PCH path in hook.sh: volmax.sh on a copy of the shipped template (Master only)
+mkdir -p $W/pchvm/card0 $W/pchcp; codec "$W/pchvm/card0/codec#0" ALC298 0x7f; cp "$TPL/mixer_paths.xml" $W/pchcp/
+sh "$ROOT/usb/audio/volmax.sh" $W/pchvm/card0 $W/pchcp/mixer_paths.xml >/dev/null && ok "volmax PCH copy: exit 0 when changed" || bad "volmax PCH copy: exit status"
+chk "volmax PCH copy: Master 127"          "$W/pchcp/mixer_paths.xml" '<ctl name="Master Playback Volume" value="127" />'
+[ "$(grep -c . $W/pchcp/mixer_paths.xml)" = "$(grep -c . $TPL/mixer_paths.xml)" ] && ok "volmax PCH copy: no lines added or lost" || bad "volmax PCH copy: line count"
+cp "$TPL/mixer_paths.xml" $W/pchcp/
+sh "$ROOT/usb/audio/volmax.sh" $W/nonexistent $W/pchcp/mixer_paths.xml >/dev/null && bad "volmax: exit 0 without codec files" || ok "volmax: exit 1 without codec files"
+cmp -s "$W/pchcp/mixer_paths.xml" "$TPL/mixer_paths.xml" && ok "volmax: file untouched without codec files" || bad "volmax: file changed without codec files"
+H=$ROOT/usb/hook.sh
+chk "hook: PCH path runs volmax.sh on a copy" "$H" 'VMSG=$(sh $G/audio/volmax.sh /proc/asound/card$CNO /tmp/gbos-audio/$AC/mixer_paths.xml) && ASRC=/tmp/gbos-audio/$AC'
+
 # ---- 6. hook.sh: card id PCH still takes the static files, and generation is guarded -------------------------------------
 H=$ROOT/usb/hook.sh
 chk "hook: PCH uses the shipped config"   "$H" 'ASRC=$G/audio/gbos-hda-pch; ADEF=$G/audio/audio_default.xml'
 chk "hook: generation only for non-PCH"   "$H" 'if [ -n "$CID" ] && [ "$CID" != PCH ]; then'
+chk "hook: no-card path leaves vendor audio configuration untouched" "$H" 'hook: no ALSA card; leaving vendor audio configuration untouched'
 chk "hook: calls the generator"           "$H" 'sh $G/audio/gen_config.sh'
 chk "hook: clears stale sound nodes after HDA re-probe" "$H" 'rm -f /dev/snd/*'
 chk "hook: rebuilds sound nodes from sysfs after HDA re-probe" "$H" 'for _snd in /sys/class/sound/*; do'
@@ -313,9 +459,78 @@ chk "hook: creates sound nodes with sysfs device numbers" "$H" 'mknod -m 0660 "/
 nochk "hook: no temporary early audio diagnostic service" "$H" 'gbos_audiodiag_early'
 nochk "hook: no temporary early audio diagnostic trigger" "$H" 'start gbos_audiodiag_early'
 chk "hook: Surface mixer_paths only on the Surface (DMI), not on every sofsoundwire card" "$H" "grep -qi 'Surface Laptop.*7th Edition' /sys/class/dmi/id/product_name"
+chk "hook: Latitude 7320 mixer path requires matching card, model, and board" "$H" "grep -qi '0TNW0H' /sys/class/dmi/id/board_name"
+chk "hook: Latitude 7320 mixer path is installed only for its SoundWire card" "$H" 'cp $G/audio/mixer_paths_latitude_7320.xml /tmp/gbos-audio/$AC/mixer_paths.xml'
+chk "hook: Latitude 7320 audio config is installed with its mixer path" "$H" 'cp $G/audio/audio_config_latitude_7320.xml /tmp/gbos-audio/$AC/audio_config.xml'
 chk "hook: generated config is copied into the tmpfs" "$H" 'cp -r $ASRC/. $A/$AC/'
 nochk "hook: no bind mount of the initramfs /tmp config" "$H" 'mount --bind $ASRC $A/$AC'
 sh -n "$H" && sh -n "$GEN" && ok "sh -n hook.sh gen_config.sh" || bad "syntax"
+
+# ---- 6a. Dell Latitude 7320 Detachable: RT1316 DAC and RT711/RT714 capture routes ---------------------------------
+M7320=$ROOT/usb/audio/mixer_paths_latitude_7320.xml
+AC7320=$ROOT/usb/audio/audio_config_latitude_7320.xml
+wellformed "$M7320" "$AC7320"
+python3 - "$M7320" > "$W/latitude7320-mixer.py.out" 2>&1 <<'EOF'
+import sys, xml.etree.ElementTree as E
+r = E.parse(sys.argv[1]).getroot()
+speaker = r.find("./path[@name='Speaker']")
+controls = {c.get('name'): c.get('value') for c in speaker.findall('ctl')}
+want = {'rt1316-1 RX Channel Select': 'L,R', 'rt1316-1 DAC Switch': '1 1'}
+if controls != want:
+    print(f'FAIL controls {controls}, want {want}')
+    sys.exit(1)
+for path, name in (('Mic', 'rt711 FU0F Capture Switch'),
+                   ('InternalMic', 'rt714 FU02 Capture Switch')):
+    entries = r.findall(f"./path[@name='{path}']/ctl")
+    if [(c.get('name'), c.get('value')) for c in entries] != [(name, '1')]:
+        print(f'FAIL {path} controls {[(c.get("name"), c.get("value")) for c in entries]}')
+        sys.exit(1)
+print('PYOK')
+EOF
+if [ $? = 0 ]; then ok "7320 mixer: speaker DAC and RT711/RT714 capture switches are route-scoped"; else bad "7320 mixer path: $(cat "$W/latitude7320-mixer.py.out")"; fi
+python3 - "$AC7320" > "$W/latitude7320-config.py.out" 2>&1 <<'EOF'
+import sys, xml.etree.ElementTree as E
+h = E.parse(sys.argv[1]).getroot().find('HiFi')
+got = {(name, field): h.findtext(f'{name}/{field}')
+       for name, field in (('Speaker', 'PlaybackPCM'), ('Headphone', 'PlaybackPCM'),
+                           ('Mic', 'CapturePCM'), ('Mic', 'CaptureMixerElem'),
+                           ('Mic', 'JackDev'), ('InternalMic', 'CapturePCM'))}
+want = {('Speaker', 'PlaybackPCM'): 'hw:sofsoundwire,2',
+        ('Headphone', 'PlaybackPCM'): 'hw:sofsoundwire,0',
+        ('Mic', 'CapturePCM'): 'hw:sofsoundwire,1',
+        ('Mic', 'CaptureMixerElem'): 'rt711 FU0F',
+        ('Mic', 'JackDev'): 'sof-soundwire Headset Jack',
+        ('InternalMic', 'CapturePCM'): 'hw:sofsoundwire,4'}
+if got != want:
+    print(f'FAIL got {got}, want {want}')
+    sys.exit(1)
+print('PYOK')
+EOF
+if [ $? = 0 ]; then ok "7320 config: InternalMic PCM 4, headset Mic PCM 1 / RT711"; else bad "7320 config: $(cat "$W/latitude7320-config.py.out")"; fi
+
+# ---- 6b. mixer diagnostics: use bundled amixer when optional tinymix is absent --------------------------------------------
+M=$ROOT/usb/audio/mixdiag.sh
+sh -n "$M" && ok "sh -n audio/mixdiag.sh" || bad "mixdiag syntax"
+D=$W/mixdiag
+mkdir -p "$D/a11y/lib" "$D/a11y/bin" "$D/a11y/share/alsa" "$D/logs/boot-test"
+cat > "$D/a11y/lib/ld-musl-x86_64.so.1" <<'EOF'
+#!/bin/sh
+[ "$1" = "--library-path" ] || exit 1
+shift 2
+exec "$@"
+EOF
+cat > "$D/a11y/bin/amixer" <<'EOF'
+#!/bin/sh
+printf 'fake amixer: %s (config=%s, config_dir=%s)\n' "$*" "$ALSA_CONFIG_PATH" "$ALSA_CONFIG_DIR"
+EOF
+chmod +x "$D/a11y/lib/ld-musl-x86_64.so.1" "$D/a11y/bin/amixer"
+GBOS_AUDIO_DIAG_ROOT=$D sh "$M" test
+grep -q '(using bundled amixer)' "$D/logs/boot-test/mixer.txt" \
+  && grep -q 'fake amixer: -D hw:0 contents' "$D/logs/boot-test/mixer.txt" \
+  && grep -q "$D/a11y/share/alsa/alsa.conf" "$D/logs/boot-test/mixer.txt" \
+  && grep -q "config_dir=$D/a11y/share/alsa" "$D/logs/boot-test/mixer.txt" \
+  && ok "mixdiag: bundled amixer uses explicit card and bundled ALSA config" \
+  || bad "mixdiag: bundled amixer fallback did not run"
 
 # ---- 7. card selection: skip the GPU's HDMI audio, whatever it is called ----------------------------------------------------
 sed -n '/^# --- audio card selection/,/^# --- end audio card selection ---/p' "$H" > $W/cardsel.sh

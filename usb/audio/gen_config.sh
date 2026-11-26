@@ -14,10 +14,11 @@
 # sof-hda-generic*.tplg) numbers its PCMs by the topology and has separate jack input devices:
 #   pcm0 HDA Analog (playback+capture), pcm31 HDA Analog Deep Buffer, pcm3/4/5 HDMI1..3, pcm6 DMIC (48 kHz 2ch), pcm7 DMIC16kHz;
 #   inputs "<name> Headphone", "<name> Mic", "<name> HDMI/DP,pcm=3|4|5".
-# Mapping: Speaker/Headphone = first non-HDMI playback PCM; Mic (headset jack) = first analog capture PCM; InternalMic = the DMIC
-# capture PCM when the card has one (SOF), else the analog capture PCM (legacy HDA: the codec's own mic pin); HDMI1..3 = the
-# HDMI/DP playback PCMs in device order (an HDMI section with no PCM is dropped; sections are optional). JackDev = the real input
-# device names found in INPUTS. Anything that cannot be determined keeps the template value (= the old behaviour).
+# Mapping: Speaker uses a PCM explicitly named "Speaker" when available, else the first non-HDMI playback PCM; Headphone uses the
+# first non-HDMI playback PCM. Mic (headset jack) uses the first analog capture PCM; InternalMic uses the DMIC capture PCM when the
+# card has one (SOF), else analog capture (legacy HDA: the codec's own mic pin). HDMI1..3 use HDMI/DP playback PCMs in device order
+# (an HDMI section with no PCM is dropped; sections are optional). JackDev uses the real input device names found in INPUTS.
+# Anything that cannot be determined keeps the template value (= the old behaviour).
 set -e
 T=$1; DEFX=$2; OUT=$3; AC=$4; CID=$5; CNAME=$6
 ASOUND=${ASOUND:-/proc/asound}; INPUTS=${INPUTS:-/proc/bus/input/devices}
@@ -54,6 +55,22 @@ if [ -n "$CARDNO" ] && [ -f "$ASOUND/pcm" ]; then
   ' "$ASOUND/pcm")"
 fi
 [ -n "$DMIC" ] || DMIC=$DMIC16
+# AMD laptops: the built-in microphones are DMICs on the audio coprocessor (ACP), which registers its own ASoC card
+# (acp-pdm-mach -> id "acppdmmach", ACP 6.3/7.x ps-mach "acp63", Rembrandt "acp6x", Renoir "acp") next to the HDA card that has
+# the speaker and the jack. When this card has no DMIC, InternalMic uses the first DMIC capture PCM of a card without HDA codecs.
+IMIC_CID=$CID
+if [ -z "$DMIC" ] && [ -n "$CARDNO" ] && [ -f "$ASOUND/pcm" ]; then
+  for _dm in $(awk -v card="$CARDNO" '
+      /^[0-9]+-[0-9]+:/ { split($1, a, "-"); if (a[1] + 0 == card + 0) next
+        line = tolower($0); if (line ~ /dmic/ && line ~ / : capture [1-9]/ && line !~ / : playback [1-9]/) print (a[1] + 0) "-" (a[2] + 0) }
+    ' "$ASOUND/pcm"); do
+    _dc=${_dm%-*}
+    ls "$ASOUND/card$_dc"/codec#* >/dev/null 2>&1 && continue   # an HDA card: not the ACP
+    _did=$(sed -n "s/^ *$_dc \[\([^] ]*\) *\].*/\1/p" "$ASOUND/cards")
+    [ -n "$_did" ] || continue
+    DMIC=${_dm#*-}; IMIC_CID=$_did; break
+  done
+fi
 IMIC=${DMIC:-$ACP}
 H1=; H2=; H3=; i=0
 for d in $HDMI; do i=$((i+1)); [ $i = 1 ] && H1=$d; [ $i = 2 ] && H2=$d; [ $i = 3 ] && H3=$d; done
@@ -73,9 +90,10 @@ fi
 
 # --- rewrite audio_config.xml ------------------------------------------------------------------------------------------
 if [ -n "$APB" ]; then
-  awk -v cid="$CID" -v cn="$CNAME" -v apb="$APB" -v spk="$SPK" -v acp="$ACP" -v imic="$IMIC" -v hpj="$HPJ" -v micj="$MICJ" \
+  awk -v cid="$CID" -v cn="$CNAME" -v apb="$APB" -v spk="$SPK" -v acp="$ACP" -v imic="$IMIC" -v imiccid="$IMIC_CID" -v hpj="$HPJ" -v micj="$MICJ" \
       -v h1="$H1" -v h2="$H2" -v h3="$H3" '
-    function setpcm(dev) { sub(/hw:[^<,]*,[0-9]*/, "hw:" cid "," dev) }
+    function setpcm(dev) { setpcmc(cid, dev) }
+    function setpcmc(c, dev) { sub(/hw:[^<,]*,[0-9]*/, "hw:" c "," dev) }
     function setjack(name) { sub(/>[^<]*</, ">" name "<") }
     /^[ \t]*<(Speaker|Headphone|InternalMic|Mic|HDMI1|HDMI2|HDMI3)>/ {
       sec = $0; sub(/^[ \t]*</, "", sec); sub(/>.*/, "", sec); buf = ""; drop = 0
@@ -89,7 +107,7 @@ if [ -n "$APB" ]; then
       if (sec == "HDMI1") setpcm(h1); if (sec == "HDMI2") setpcm(h2); if (sec == "HDMI3") setpcm(h3)
     }
     sec != "" && /<CapturePCM>/ {
-      if (sec == "InternalMic" && imic != "") setpcm(imic)
+      if (sec == "InternalMic" && imic != "") setpcmc(imiccid, imic)
       if (sec == "Mic" && acp != "") setpcm(acp)
     }
     sec != "" && /<JackDev>/ {
@@ -114,5 +132,9 @@ sedi "$O/mixer_paths.xml" \
   -e '/name="Speaker Playback Switch"/{' -e p -e 's/name="Speaker Playback Switch"/name="Bass Speaker Playback Switch"/' -e '}' \
   -e '/name="Capture Switch"/{' -e p -e 's/name="Capture Switch"/name="Mic Capture Switch"/' -e p \
   -e 's/name="Mic Capture Switch"/name="Headset Mic Capture Switch"/' -e '}'
+# The 87s above are the usual Realtek maximum; volmax.sh replaces them with this codec's own maxima (ALC298: 127, issues 31/32).
+VMSG=
+if [ -n "$CARDNO" ] && [ -f "${0%/*}/volmax.sh" ]; then VMSG=$(sh "${0%/*}/volmax.sh" "$ASOUND/card$CARDNO" "$O/mixer_paths.xml") || true; fi
 
-echo "pcm map: card=${CARDNO:-?} analog-playback=${APB:--} analog-capture=${ACP:--} dmic=${DMIC:--} internal-mic=${IMIC:--} hdmi=${HDMI:--}; jacks: headphone='${HPJ:--}' mic='${MICJ:--}'"
+echo "pcm map: card=${CARDNO:-?} playback-default=${APB:--} speaker-playback=${SPK:-${APB:--}} headphone-playback=${APB:--} analog-capture=${ACP:--} dmic=${DMIC:--} internal-mic=${IMIC:+$IMIC_CID,}${IMIC:--} hdmi=${HDMI:--}; jacks: headphone='${HPJ:--}' mic='${MICJ:--}'"
+[ -z "$VMSG" ] || echo "$VMSG"

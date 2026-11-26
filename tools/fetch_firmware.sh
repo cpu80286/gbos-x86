@@ -6,6 +6,41 @@ set -e
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 W=${1:-$(mktemp -d)}
 OUT=$REPO/usb/firmware
+
+# IPU6 firmware for the in-tree driver (CONFIG_VIDEO_INTEL_IPU6).
+# Keep this separate from linux-firmware: Intel publishes it in ipu6-camera-bins.
+IPU6_BINS_COMMIT=30e87664829782811a765b0ca9eea3a878a7ff29
+IPU6_FW_SHA256=70cbe88d075dc03938a94a897912409c5fdd56dc987b3db2a9a2a867bb2f5f99
+IPU6_LICENSE_SHA256=6e25b8344c5e2b1d31b813387caee7d117188f75959b7b86d593f437a96755e6
+IPU6_FW_CACHE=$W/ipu6-camera-bins-$IPU6_BINS_COMMIT
+mkdir -p "$IPU6_FW_CACHE"
+if [ ! -f "$IPU6_FW_CACHE/ipu6_fw.bin" ] ||
+   [ "$(sha256sum "$IPU6_FW_CACHE/ipu6_fw.bin" | awk '{print $1}')" != "$IPU6_FW_SHA256" ]; then
+  curl -fL -o "$IPU6_FW_CACHE/ipu6_fw.bin.tmp" \
+    "https://raw.githubusercontent.com/intel/ipu6-camera-bins/$IPU6_BINS_COMMIT/lib/firmware/intel/ipu/ipu6_fw.bin"
+  echo "$IPU6_FW_SHA256  $IPU6_FW_CACHE/ipu6_fw.bin.tmp" | sha256sum -c -
+  mv "$IPU6_FW_CACHE/ipu6_fw.bin.tmp" "$IPU6_FW_CACHE/ipu6_fw.bin"
+fi
+if [ ! -f "$IPU6_FW_CACHE/LICENSE" ] ||
+   [ "$(sha256sum "$IPU6_FW_CACHE/LICENSE" | awk '{print $1}')" != "$IPU6_LICENSE_SHA256" ]; then
+  curl -fL -o "$IPU6_FW_CACHE/LICENSE.tmp" \
+    "https://raw.githubusercontent.com/intel/ipu6-camera-bins/$IPU6_BINS_COMMIT/LICENSE"
+  echo "$IPU6_LICENSE_SHA256  $IPU6_FW_CACHE/LICENSE.tmp" | sha256sum -c -
+  mv "$IPU6_FW_CACHE/LICENSE.tmp" "$IPU6_FW_CACHE/LICENSE"
+fi
+mkdir -p "$OUT/intel/ipu"
+if [ -f "$OUT/intel/ipu/ipu6_fw.bin" ] &&
+   [ "$(sha256sum "$OUT/intel/ipu/ipu6_fw.bin" | awk '{print $1}')" != "$IPU6_FW_SHA256" ]; then
+  echo "existing $OUT/intel/ipu/ipu6_fw.bin does not match the pinned Intel firmware; preserving it" >&2
+  exit 1
+fi
+if [ -f "$OUT/intel/ipu/LICENSE" ] &&
+   [ "$(sha256sum "$OUT/intel/ipu/LICENSE" | awk '{print $1}')" != "$IPU6_LICENSE_SHA256" ]; then
+  echo "existing $OUT/intel/ipu/LICENSE does not match the pinned Intel license; preserving it" >&2
+  exit 1
+fi
+[ -f "$OUT/intel/ipu/ipu6_fw.bin" ] || cp "$IPU6_FW_CACHE/ipu6_fw.bin" "$OUT/intel/ipu/ipu6_fw.bin"
+[ -f "$OUT/intel/ipu/LICENSE" ] || cp "$IPU6_FW_CACHE/LICENSE" "$OUT/intel/ipu/LICENSE"
 [ -d $W/fw/.git ] || git clone --depth 1 --no-checkout https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git $W/fw
 cd $W/fw
 git ls-tree -r --name-only HEAD > $W/all.txt
@@ -36,6 +71,10 @@ g() { grep "$@" $W/all.txt || true; }
   g -E '^qca/(rampatch_usb|nvm_usb|rampatch_0|nvm_0|htbtfw|crbtfw|crnv|QCA|rampatch_|nvm_)'
   # Broadcom Bluetooth + brcmfmac PCIe
   g -E '^brcm/(BCM|brcmfmac4(3602|350|356|358|3455|371))'
+  # Marvell 88W8897 Wi-Fi + Bluetooth (Surface Pro 4/5/6, Book 1/2, Laptop 1/2; mwifiex_pcie). Without it the Surface Pro 5 had
+  # "Direct firmware load for mrvl/pcie8897_uapsta.bin failed with error -2": no Wi-Fi, and no Bluetooth either (the same firmware
+  # starts the chip's USB Bluetooth function).
+  g -E '^mrvl/pcie8897_uapsta\.bin$'
   # Cirrus amps found on some laptops
   g -E '^cirrus/cs35l(41|56)-[^/]*$'
   # Texas Instruments TAS2781/TAS2563 smart amps (Lenovo ThinkBook/Yoga/Legion, Meteor Lake+; I2C amps behind an HDA codec). The HDA driver
@@ -83,6 +122,7 @@ if [ -d $OUT/intel/iwlwifi ]; then mv $OUT/intel/iwlwifi/* $OUT/ && rmdir $OUT/i
 # keep the symlink-targets: linux-firmware uses symlinks (e.g. in rtw89, intel/sof); FAT can't, so dereference.
 find $OUT -type l | while read l; do t=$(readlink -f "$l"); [ -f "$t" ] && { rm "$l"; cp "$t" "$l"; } || rm "$l"; done
 echo "linux-firmware commit: $(cat $W/commit.txt)" > $OUT/FIRMWARE_SOURCE.txt
+echo "ipu6-camera-bins: commit $IPU6_BINS_COMMIT, ipu6_fw.bin sha256 $IPU6_FW_SHA256" >> "$OUT/FIRMWARE_SOURCE.txt"
 du -sh $OUT
 
 # Intel SOF audio firmware + topologies come from a separate repo (not in linux-firmware).
